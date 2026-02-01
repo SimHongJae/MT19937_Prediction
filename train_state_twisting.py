@@ -14,6 +14,13 @@ import numpy as np
 from tqdm import tqdm
 import os
 
+try:
+    import vessl
+    VESSL_AVAILABLE = True
+except ImportError:
+    VESSL_AVAILABLE = False
+    print("⚠️  VESSL SDK not available, metrics won't be logged to dashboard")
+
 from model import StateTwisting
 
 
@@ -186,6 +193,20 @@ def main():
         # Print summary
         print(f"Train - Loss: {train_loss:.4f}, Bit Acc: {train_bit_acc:.4f} ({train_bit_acc*100:.2f}%), Exact: {train_exact:.4f}")
         print(f"Val   - Loss: {val_loss:.4f}, Bit Acc: {val_bit_acc:.4f} ({val_bit_acc*100:.2f}%), Exact: {val_exact:.4f}")
+
+        # Log to VESSL dashboard
+        if VESSL_AVAILABLE:
+            vessl.log(
+                step=epoch,
+                payload={
+                    'train/loss': train_loss,
+                    'train/bit_accuracy': train_bit_acc,
+                    'train/exact_match': train_exact,
+                    'val/loss': val_loss,
+                    'val/bit_accuracy': val_bit_acc,
+                    'val/exact_match': val_exact,
+                }
+            )
 
         # Save best model
         if val_bit_acc > best_val_acc:
