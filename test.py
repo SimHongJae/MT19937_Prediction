@@ -1,5 +1,5 @@
 """
-Test MT19937 Prediction Models
+Test MT19937 Prediction Models (NCC Group Architecture)
 Evaluates trained models on test set
 """
 
@@ -9,7 +9,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 from tqdm import tqdm
 
-from model import InverseTempering, StateTransition, MT19937Predictor
+from model import InverseTempering, StateTwisting
 
 
 def load_data(data_type, split='test'):
@@ -21,22 +21,25 @@ def load_data(data_type, split='test'):
 
 
 def calculate_bit_accuracy(predictions, targets):
-    """Calculate bit-wise accuracy"""
-    pred_bits = (torch.sigmoid(predictions) > 0.5).float()
+    """
+    Calculate bit-wise accuracy
+    Model outputs Sigmoid probabilities, not logits
+    """
+    pred_bits = (predictions > 0.5).float()
     correct = (pred_bits == targets).float().mean()
     return correct.item()
 
 
 def calculate_exact_match(predictions, targets):
     """Calculate exact match rate"""
-    pred_bits = (torch.sigmoid(predictions) > 0.5).float()
+    pred_bits = (predictions > 0.5).float()
     all_match = (pred_bits == targets).all(dim=1).float().mean()
     return all_match.item()
 
 
 def calculate_per_bit_accuracy(predictions, targets):
     """Calculate accuracy for each of the 32 bits"""
-    pred_bits = (torch.sigmoid(predictions) > 0.5).float()
+    pred_bits = (predictions > 0.5).float()
     per_bit_acc = (pred_bits == targets).float().mean(dim=0)
     return per_bit_acc.cpu().numpy()
 
@@ -44,7 +47,8 @@ def calculate_per_bit_accuracy(predictions, targets):
 def test_model(model, dataloader, device, model_name="Model"):
     """Test a model on dataset"""
     model.eval()
-    criterion = nn.BCEWithLogitsLoss()
+    # Model outputs Sigmoid probabilities
+    criterion = nn.BCELoss()
 
     total_loss = 0.0
     total_bit_acc = 0.0
@@ -121,7 +125,7 @@ def main():
     BATCH_SIZE = 64
 
     print("="*60)
-    print("MT19937 MODEL EVALUATION")
+    print("MT19937 MODEL EVALUATION (NCC Group Architecture)")
     print("="*60)
     print(f"Device: {DEVICE}")
 
@@ -138,60 +142,61 @@ def main():
     print(f"Test samples: {len(X_test)}")
 
     # Load model
-    inv_temp_model = InverseTempering(hidden_dim=64).to(DEVICE)
+    inv_temp_model = InverseTempering(hidden_dim=640).to(DEVICE)
     try:
         state_dict = torch.load('checkpoints/inverse_tempering.pth', map_location=DEVICE)
         inv_temp_model.load_state_dict(state_dict)
-        print("OK Loaded model from checkpoints/inverse_tempering.pth")
+        print("✓ Loaded model from checkpoints/inverse_tempering.pth")
 
         # Test
         results = test_model(inv_temp_model, test_loader, DEVICE, "Inverse Tempering")
         print_results(results, "Inverse Tempering")
 
+        # Check target
+        target = 0.75
+        if results['bit_accuracy'] >= target:
+            print(f"\n✓ SUCCESS: Achieved target accuracy of {target*100:.0f}%!")
+        else:
+            print(f"\n⚠ Target: {target*100:.0f}%, Achieved: {results['bit_accuracy']*100:.2f}%")
+
     except FileNotFoundError:
-        print("X Model checkpoint not found: checkpoints/inverse_tempering.pth")
+        print("✗ Model checkpoint not found: checkpoints/inverse_tempering.pth")
         print("  Please train the model first using train_inverse_tempering.py")
 
-    # Test State Transition Model
+    # Test State Twisting Model
     print("\n" + "="*60)
-    print("2. STATE TRANSITION MODEL")
+    print("2. STATE TWISTING MODEL")
     print("="*60)
 
     # Load test data
-    X_test, y_test = load_data('transition', 'test')
+    X_test, y_test = load_data('twisting', 'test')
     test_dataset = TensorDataset(X_test, y_test)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     print(f"Test samples: {len(X_test)}, shape: {X_test.shape}")
 
     # Load model
-    state_trans_model = StateTransition(
-        d_model=128,
-        nhead=4,
-        num_layers=4,
-        dim_feedforward=512,
-        dropout=0.1
-    ).to(DEVICE)
+    state_twist_model = StateTwisting(hidden_dim=96).to(DEVICE)
 
     try:
-        state_dict = torch.load('checkpoints/state_transition.pth', map_location=DEVICE)
-        state_trans_model.load_state_dict(state_dict)
-        print("OK Loaded model from checkpoints/state_transition.pth")
+        state_dict = torch.load('checkpoints/state_twisting.pth', map_location=DEVICE)
+        state_twist_model.load_state_dict(state_dict)
+        print("✓ Loaded model from checkpoints/state_twisting.pth")
 
         # Test
-        results = test_model(state_trans_model, test_loader, DEVICE, "State Transition")
-        print_results(results, "State Transition")
+        results = test_model(state_twist_model, test_loader, DEVICE, "State Twisting")
+        print_results(results, "State Twisting")
 
         # Check if target accuracy achieved
-        target = 0.80
+        target = 0.90
         if results['bit_accuracy'] >= target:
-            print(f"\nOK SUCCESS: Achieved target accuracy of {target*100:.0f}%!")
+            print(f"\n✓ SUCCESS: Achieved target accuracy of {target*100:.0f}%!")
         else:
             print(f"\n⚠ Target: {target*100:.0f}%, Achieved: {results['bit_accuracy']*100:.2f}%")
 
     except FileNotFoundError:
-        print("X Model checkpoint not found: checkpoints/state_transition.pth")
-        print("  Please train the model first using train_transition.py")
+        print("✗ Model checkpoint not found: checkpoints/state_twisting.pth")
+        print("  Please train the model first using train_state_twisting.py")
 
     print("\n" + "="*60)
     print("EVALUATION COMPLETE")
