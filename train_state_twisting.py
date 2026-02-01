@@ -171,6 +171,8 @@ def main():
     # Training loop
     best_val_acc = 0.0
     best_model_state = None
+    patience = 5  # Early stopping patience
+    patience_counter = 0
 
     print("\n" + "="*60)
     print("Training started...")
@@ -212,7 +214,16 @@ def main():
         if val_bit_acc > best_val_acc:
             best_val_acc = val_bit_acc
             best_model_state = model.state_dict().copy()
+            patience_counter = 0  # Reset patience
             print(f"✓ New best model! Val Bit Acc: {val_bit_acc:.4f} ({val_bit_acc*100:.2f}%)")
+        else:
+            patience_counter += 1
+            print(f"⚠ No improvement ({patience_counter}/{patience})")
+            
+            # Early stopping
+            if patience_counter >= patience:
+                print(f"\n🛑 Early stopping triggered! No improvement for {patience} epochs.")
+                break
 
     # Save best model
     os.makedirs('checkpoints', exist_ok=True)
