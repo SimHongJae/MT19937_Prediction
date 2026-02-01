@@ -13,25 +13,31 @@ import math
 
 class InverseTempering(nn.Module):
     """
-    MLP to reverse MT19937 tempering function
+    MLP to reverse MT19937 tempering function (NCC Group architecture)
     Input: 32 bits after tempering
     Output: 32 bits before tempering (internal state)
+    
+    Architecture from NCC Group research:
+    - Single hidden layer with 640 neurons
+    - ReLU activation for hidden layer
+    - Sigmoid activation for output layer
+    - Total params: 41,632 (vs previous 8,352)
+    - Achieved: 100% bit accuracy
     """
 
-    def __init__(self, hidden_dim=64):
+    def __init__(self, hidden_dim=640):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(32, hidden_dim),
+            nn.Linear(32, hidden_dim),  # 32*640 + 640 = 21,120 params
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 32)
+            nn.Linear(hidden_dim, 32),  # 640*32 + 32 = 20,512 params
+            nn.Sigmoid()  # Binary output for bits
         )
 
     def forward(self, tempered_bits):
         """
         :param tempered_bits: (batch, 32) float tensor of bits [0.0 or 1.0]
-        :return: (batch, 32) predicted internal state bits (logits)
+        :return: (batch, 32) predicted internal state bits (probabilities 0-1)
         """
         return self.net(tempered_bits)
 
@@ -63,116 +69,100 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:x.size(1), :].unsqueeze(0)
 
 
-class StateTransition(nn.Module):
+class StateTwisting(nn.Module):
     """
-    Transformer-based model to predict next internal state
-    Input: Sequence of 624 internal states (624, 32)
-    Output: Next internal state (32 bits)
+    MLP to learn MT19937 state twisting function (NCC Group architecture)
+    
+    MT19937 state relation:
+    MT[i] = f(MT[i-624], MT[i-623], MT[i-227])
+    
+    Input optimization from NCC Group:
+    - MT[i-624]: Only MSB (1 bit) - other bits masked to 0x80000000
+    - MT[i-623]: All 32 bits
+    - MT[i-227]: All 32 bits
+    - Total: 65 bits instead of 96
+    
+    Architecture from NCC Group research:
+    - Single hidden layer with 96 neurons
+    - ReLU activation for hidden layer
+    - Sigmoid activation for output layer
+    - Total params: 9,440
+    - Achieved: 100% bit accuracy
     """
 
-    def __init__(self, d_model=128, nhead=4, num_layers=4, dim_feedforward=512, dropout=0.1):
+    def __init__(self, hidden_dim=96):
         super().__init__()
-
-        self.d_model = d_model
-
-        # Input embedding: project 32-bit vectors to d_model dimensions
-        self.input_embedding = nn.Linear(32, d_model)
-
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(d_model, max_len=624)
-
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            activation='relu'
+        self.net = nn.Sequential(
+            nn.Linear(65, hidden_dim),   # 65*96 + 96 = 6,336 params
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 32),   # 96*32 + 32 = 3,104 params
+            nn.Sigmoid()  # Binary output for bits
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # Output head
-        self.output_head = nn.Linear(d_model, 32)
-
-    def forward(self, internal_states):
+    def forward(self, state_triplet):
         """
-        :param internal_states: (batch, 624, 32) float tensor of internal state bits
-        :return: (batch, 32) predicted next state bits (logits)
+        :param state_triplet: (batch, 65) float tensor
+                              [1 bit from MT[i-624], 32 bits from MT[i-623], 32 bits from MT[i-227]]
+        :return: (batch, 32) predicted next state bits (probabilities 0-1)
         """
-        # Embed: (batch, 624, 32) -> (batch, 624, d_model)
-        x = self.input_embedding(internal_states)
-
-        # Add positional encoding
-        x = self.pos_encoder(x)
-
-        # Transformer: (batch, 624, d_model) -> (batch, 624, d_model)
-        x = self.transformer(x)
-
-        # Take last position (or use pooling)
-        # For MT19937, the last position should be most relevant for predicting next
-        x = x[:, -1, :]  # (batch, d_model)
-
-        # Output: (batch, d_model) -> (batch, 32)
-        return self.output_head(x)
+        return self.net(state_triplet)
 
 
 class MT19937Predictor(nn.Module):
     """
-    Combined model: Inverse Tempering + State Transition
-    Input: Sequence of 624 tempered outputs
-    Output: Next tempered output
+    Combined model: Inverse Tempering + State Twisting (NCC Group approach)
+    Input: Three tempered outputs at positions [i-624, i-623, i-227]
+    Output: Next tempered output at position i
     """
 
     def __init__(self,
-                 inverse_temp_hidden=64,
-                 trans_d_model=128,
-                 trans_nhead=4,
-                 trans_num_layers=4,
-                 trans_dim_feedforward=512,
-                 trans_dropout=0.1):
+                 inverse_temp_hidden=640,
+                 twisting_hidden=96):
         super().__init__()
 
         # Module 1: Inverse tempering
         self.inverse_tempering = InverseTempering(hidden_dim=inverse_temp_hidden)
 
-        # Module 2: State transition
-        self.state_transition = StateTransition(
-            d_model=trans_d_model,
-            nhead=trans_nhead,
-            num_layers=trans_num_layers,
-            dim_feedforward=trans_dim_feedforward,
-            dropout=trans_dropout
-        )
+        # Module 2: State twisting
+        self.state_twisting = StateTwisting(hidden_dim=twisting_hidden)
 
-        # Note: We could add a tempering module here, but since we're predicting
-        # the next internal state, we'll apply tempering in post-processing if needed
-
-    def forward(self, tempered_sequence):
+    def forward(self, tempered_triplet):
         """
-        :param tempered_sequence: (batch, 624, 32) sequence of tempered outputs
-        :return: (batch, 32) predicted next internal state (logits)
+        :param tempered_triplet: (batch, 3, 32) three tempered outputs
+                                 [MT[i-624], MT[i-623], MT[i-227]]
+        :return: (batch, 32) predicted next internal state (probabilities 0-1)
         """
-        batch_size, seq_len, bit_dim = tempered_sequence.shape
+        batch_size = tempered_triplet.shape[0]
 
-        # Reverse tempering for each element in sequence
-        # Reshape to (batch * seq_len, 32)
-        tempered_flat = tempered_sequence.view(-1, bit_dim)
+        # Reverse tempering for all three outputs
+        # Reshape to (batch * 3, 32)
+        tempered_flat = tempered_triplet.view(-1, 32)
 
         # Apply inverse tempering
-        internal_flat = self.inverse_tempering(tempered_flat)  # (batch * seq_len, 32)
+        internal_flat = self.inverse_tempering(tempered_flat)  # (batch * 3, 32)
 
-        # Apply sigmoid to get probabilities, then round to get bits
-        # (Or keep as logits for training)
-        internal_probs = torch.sigmoid(internal_flat)
+        # Reshape back to (batch, 3, 32)
+        internal_states = internal_flat.view(batch_size, 3, 32)
 
-        # Reshape back to (batch, seq_len, 32)
-        internal_sequence = internal_probs.view(batch_size, seq_len, bit_dim)
+        # Extract bits according to NCC optimization:
+        # - MT[i-624]: MSB only (1 bit)
+        # - MT[i-623]: All 32 bits
+        # - MT[i-227]: All 32 bits
+        mt_624_msb = internal_states[:, 0:1, 31:32]  # (batch, 1, 1) - MSB
+        mt_623_all = internal_states[:, 1:2, :]      # (batch, 1, 32)
+        mt_227_all = internal_states[:, 2:3, :]      # (batch, 1, 32)
 
-        # Predict next state using transition model
-        next_state_logits = self.state_transition(internal_sequence)
+        # Concatenate: (batch, 65)
+        state_triplet = torch.cat([
+            mt_624_msb.squeeze(1),   # (batch, 1)
+            mt_623_all.squeeze(1),   # (batch, 32)
+            mt_227_all.squeeze(1)    # (batch, 32)
+        ], dim=1)
 
-        return next_state_logits
+        # Predict next state using twisting model
+        next_state_probs = self.state_twisting(state_triplet)
+
+        return next_state_probs
 
     def load_pretrained_modules(self, inverse_temp_path=None, state_trans_path=None):
         """
@@ -204,35 +194,33 @@ if __name__ == "__main__":
     print("="*60)
     print("InverseTempering Model")
     print("="*60)
-    inv_temp = InverseTempering(hidden_dim=64)
+    inv_temp = InverseTempering(hidden_dim=640)
     test_input = torch.randn(4, 32)  # batch=4, bits=32
     test_output = inv_temp(test_input)
     print(f"Input shape: {test_input.shape}")
     print(f"Output shape: {test_output.shape}")
     print(f"Parameters: {count_parameters(inv_temp):,}")
 
-    # Test StateTransition
+    # Test StateTwisting
     print("\n" + "="*60)
-    print("StateTransition Model")
+    print("StateTwisting Model (NCC Group Architecture)")
     print("="*60)
-    state_trans = StateTransition(d_model=128, nhead=4, num_layers=4)
-    test_input = torch.randn(4, 624, 32)  # batch=4, seq=624, bits=32
-    test_output = state_trans(test_input)
+    state_twist = StateTwisting(hidden_dim=96)
+    test_input = torch.randn(4, 65)  # batch=4, 65 bits (1 + 32 + 32)
+    test_output = state_twist(test_input)
     print(f"Input shape: {test_input.shape}")
     print(f"Output shape: {test_output.shape}")
-    print(f"Parameters: {count_parameters(state_trans):,}")
+    print(f"Parameters: {count_parameters(state_twist):,}")
 
     # Test MT19937Predictor
     print("\n" + "="*60)
     print("MT19937Predictor (Combined) Model")
     print("="*60)
     predictor = MT19937Predictor(
-        inverse_temp_hidden=64,
-        trans_d_model=128,
-        trans_nhead=4,
-        trans_num_layers=4
+        inverse_temp_hidden=640,
+        twisting_hidden=96
     )
-    test_input = torch.randn(4, 624, 32)  # batch=4, seq=624, bits=32
+    test_input = torch.randn(4, 3, 32)  # batch=4, 3 states, bits=32
     test_output = predictor(test_input)
     print(f"Input shape: {test_input.shape}")
     print(f"Output shape: {test_output.shape}")

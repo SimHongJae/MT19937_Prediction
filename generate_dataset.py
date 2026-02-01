@@ -1,8 +1,8 @@
 """
-Generate datasets for MT19937 prediction training
+Generate datasets for MT19937 prediction training (NCC Group approach)
 Creates two types of datasets:
 1. Tempering dataset: (tempered_output, internal_state) pairs
-2. Transition dataset: (624 internal states, next internal state) sequences
+2. Twisting dataset: (state_triplet, next_state) pairs following MT19937 math
 """
 
 import numpy as np
@@ -35,41 +35,57 @@ def generate_tempering_dataset(num_samples, seed=42):
     return np.array(tempered_bits, dtype=np.float32), np.array(internal_bits, dtype=np.float32)
 
 
-def generate_transition_dataset(num_samples, window_size=100, seed=42):
+def generate_twisting_dataset(num_samples, seed=42):
     """
-    Generate dataset for state transition training
+    Generate dataset for state twisting training (NCC Group approach)
+    
+    MT19937 state relation:
+    MT[i] = f(MT[i-624], MT[i-623], MT[i-227])
+    
     :param num_samples: number of samples to generate
-    :param window_size: sequence length (default 624)
     :param seed: random seed
-    :return: (X, y) where X is (N, 624, 32) and y is (N, 32)
+    :return: (X, y) where X is (N, 65) and y is (N, 32)
+             X format: [1 bit from MT[i-624], 32 bits from MT[i-623], 32 bits from MT[i-227]]
     """
-    print(f"Generating transition dataset with {num_samples} samples...")
-
+    print(f"Generating state twisting dataset with {num_samples} samples...")
+    
     mt = MT19937(seed=seed)
-
-    # Generate enough internal states
-    total_needed = num_samples + window_size
+    
+    # Generate enough internal states for MT19937 (624 state buffer + samples)
+    # We need 624 states to fill the buffer, then generate samples
+    total_needed = 624 + num_samples
     print(f"Generating {total_needed} internal states...")
-
+    
     internal_states = []
     for _ in tqdm(range(total_needed), desc="Internal states"):
         internal, _ = mt.extract_with_internal()
         internal_states.append(int_to_bits(internal))
-
+    
     internal_states = np.array(internal_states, dtype=np.float32)
-
-    # Create sliding windows
-    print("Creating sliding windows...")
+    
+    # Create triplets based on MT19937 state relationship
+    print("Creating state triplets...")
     X = []
     y = []
-
-    for i in tqdm(range(num_samples), desc="Windows"):
-        window = internal_states[i:i+window_size]  # (624, 32)
-        target = internal_states[i+window_size]    # (32,)
-
-        X.append(window)
-        y.append(target)
-
+    
+    for i in tqdm(range(624, 624 + num_samples), desc="Triplets"):
+        # Get the three required states
+        # MT[i] depends on MT[i-624], MT[i-623], MT[i-227]
+        mt_i_624 = internal_states[i - 624]  # (32,)
+        mt_i_623 = internal_states[i - 623]  # (32,)
+        mt_i_227 = internal_states[i - 227]  # (32,)
+        mt_i = internal_states[i]            # (32,) - target
+        
+        # Extract only MSB from MT[i-624] (NCC optimization)
+        # MSB is the last bit (index 31) in our bit representation
+        mt_i_624_msb = mt_i_624[31:32]  # (1,)
+        
+        # Concatenate: [1 bit, 32 bits, 32 bits] = 65 bits
+        triplet = np.concatenate([mt_i_624_msb, mt_i_623, mt_i_227])
+        
+        X.append(triplet)
+        y.append(mt_i)
+    
     return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
 
 
@@ -102,10 +118,10 @@ def split_dataset(X, y, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
 
 
 def main():
-    # Configuration
-    NUM_TEMPERING_SAMPLES = 100000  # For inverse tempering (smaller, easier task)
-    NUM_TRANSITION_SAMPLES = 100000  # Reduced from 500000 due to memory constraints
-    WINDOW_SIZE = 100  # Reduced from 624 to make problem more learnable
+    # Configuration (NCC Group used 5M samples)
+    # Start with smaller numbers for testing, scale up for H100
+    NUM_TEMPERING_SAMPLES = 100000   # NCC used 5,000,000
+    NUM_TWISTING_SAMPLES = 100000    # NCC used 5,000,000
     SEED = 42
 
     # Create output directory
@@ -146,41 +162,41 @@ def main():
     print(f"  Val:   {len(temp_X_val)} samples")
     print(f"  Test:  {len(temp_X_test)} samples")
 
-    # Generate transition dataset
+    # Generate twisting dataset
     print("\n" + "="*60)
-    print("STEP 2: Generating Transition Dataset")
+    print("STEP 2: Generating State Twisting Dataset")
     print("="*60)
 
-    # Use different seed for transition dataset
-    trans_X, trans_y = generate_transition_dataset(NUM_TRANSITION_SAMPLES, window_size=WINDOW_SIZE, seed=SEED+1)
+    # Use different seed for twisting dataset
+    twist_X, twist_y = generate_twisting_dataset(NUM_TWISTING_SAMPLES, seed=SEED+1)
 
-    # Split transition dataset
-    (trans_X_train, trans_y_train,
-     trans_X_val, trans_y_val,
-     trans_X_test, trans_y_test) = split_dataset(trans_X, trans_y)
+    # Split twisting dataset
+    (twist_X_train, twist_y_train,
+     twist_X_val, twist_y_val,
+     twist_X_test, twist_y_test) = split_dataset(twist_X, twist_y)
 
-    # Save transition dataset
-    print("\nSaving transition dataset...")
+    # Save twisting dataset
+    print("\nSaving twisting dataset...")
     np.savez_compressed(
-        "data/transition_train.npz",
-        X=trans_X_train,
-        y=trans_y_train
+        "data/twisting_train.npz",
+        X=twist_X_train,
+        y=twist_y_train
     )
     np.savez_compressed(
-        "data/transition_val.npz",
-        X=trans_X_val,
-        y=trans_y_val
+        "data/twisting_val.npz",
+        X=twist_X_val,
+        y=twist_y_val
     )
     np.savez_compressed(
-        "data/transition_test.npz",
-        X=trans_X_test,
-        y=trans_y_test
+        "data/twisting_test.npz",
+        X=twist_X_test,
+        y=twist_y_test
     )
 
-    print(f"Transition dataset saved:")
-    print(f"  Train: {len(trans_X_train)} samples, shape {trans_X_train.shape}")
-    print(f"  Val:   {len(trans_X_val)} samples")
-    print(f"  Test:  {len(trans_X_test)} samples")
+    print(f"Twisting dataset saved:")
+    print(f"  Train: {len(twist_X_train)} samples, shape {twist_X_train.shape}")
+    print(f"  Val:   {len(twist_X_val)} samples")
+    print(f"  Test:  {len(twist_X_test)} samples")
 
     # Print summary
     print("\n" + "="*60)
@@ -188,23 +204,24 @@ def main():
     print("="*60)
     print("\nFiles created in 'data/' directory:")
     print("  tempering_train.npz, tempering_val.npz, tempering_test.npz")
-    print("  transition_train.npz, transition_val.npz, transition_test.npz")
+    print("  twisting_train.npz, twisting_val.npz, twisting_test.npz")
 
     # Print dataset info
     print("\nDataset shapes:")
     print(f"  Tempering X: {temp_X_train.shape} (batch, 32_bits)")
     print(f"  Tempering y: {temp_y_train.shape} (batch, 32_bits)")
-    print(f"  Transition X: {trans_X_train.shape} (batch, {WINDOW_SIZE}_states, 32_bits)")
-    print(f"  Transition y: {trans_y_train.shape} (batch, 32_bits)")
+    print(f"  Twisting X: {twist_X_train.shape} (batch, 65_bits)")
+    print(f"  Twisting y: {twist_y_train.shape} (batch, 32_bits)")
 
     # Show example
     print("\nExample tempering sample:")
     print(f"  Tempered (input): {temp_X_train[0][:8].astype(int).tolist()}... (first 8 bits)")
     print(f"  Internal (target): {temp_y_train[0][:8].astype(int).tolist()}... (first 8 bits)")
 
-    print("\nExample transition sample:")
-    print(f"  Input shape: {trans_X_train[0].shape} (624 states, each 32 bits)")
-    print(f"  Target shape: {trans_y_train[0].shape} (32 bits)")
+    print("\nExample twisting sample:")
+    print(f"  Input shape: {twist_X_train[0].shape} (65 bits: 1 + 32 + 32)")
+    print(f"  Target shape: {twist_y_train[0].shape} (32 bits)")
+    print(f"  First 5 input bits: {twist_X_train[0][:5].astype(int).tolist()}")
 
 
 if __name__ == "__main__":
