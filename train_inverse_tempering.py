@@ -130,7 +130,7 @@ def main():
     HIDDEN_DIM = 640  # NCC used 640 for 100% accuracy
     BATCH_SIZE = 256  # Can use larger batch for this simple task
     LEARNING_RATE = 1e-3
-    EPOCHS = 50  # More epochs for 5M samples to reach 95%+
+    EPOCHS = 30  # Достаточно для 100% (достигнуто на эпохе 26)
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print("="*60)

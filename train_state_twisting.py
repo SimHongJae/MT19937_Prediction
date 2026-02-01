@@ -131,7 +131,7 @@ def main():
     HIDDEN_DIM = 96  # NCC used 96 for 100% accuracy
     BATCH_SIZE = 128  # Smaller batch for 65-bit input
     LEARNING_RATE = 1e-3
-    EPOCHS = 50  # May need more epochs for this task
+    EPOCHS = 35  # State Twisting은 더 쉬워서 빨리 수렴  # May need more epochs for this task
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print("="*60)
