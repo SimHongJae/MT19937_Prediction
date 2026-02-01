@@ -14,5 +14,5 @@ run:
       pip install tqdm numpy
       python generate_dataset.py
       python train_inverse_tempering.py
-      python train_transition.py
+      python train_state_twisting.py
       python test.py
