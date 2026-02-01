@@ -119,9 +119,9 @@ def split_dataset(X, y, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
 
 def main():
     # Configuration (NCC Group used 5M samples)
-    # Start with smaller numbers for testing, scale up for H100
-    NUM_TEMPERING_SAMPLES = 100000   # NCC used 5,000,000
-    NUM_TWISTING_SAMPLES = 100000    # NCC used 5,000,000
+    # Full production training with 5M samples
+    NUM_TEMPERING_SAMPLES = 5000000   # NCC used 5,000,000 for 100% accuracy
+    NUM_TWISTING_SAMPLES = 5000000    # NCC used 5,000,000 for 100% accuracy
     SEED = 42
 
     # Create output directory
